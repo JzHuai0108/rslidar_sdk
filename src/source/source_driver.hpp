@@ -182,10 +182,24 @@ inline SourceDriver::~SourceDriver()
 
 inline void SourceDriver::stop()
 {
-  driver_ptr_->stop();
+  if (driver_ptr_)
+  {
+    driver_ptr_->stop();
+  }
 
   to_exit_process_ = true;
-  point_cloud_process_thread_.join();
+
+  if (point_cloud_process_thread_.joinable())
+  {
+    point_cloud_process_thread_.join();
+  }
+
+#ifdef ENABLE_IMU_DATA_PARSE
+  if (imu_data_process_thread_.joinable())
+  {
+    imu_data_process_thread_.join();
+  }
+#endif
 }
 
 inline std::shared_ptr<LidarPointCloudMsg> SourceDriver::getPointCloud(void)
