@@ -51,6 +51,7 @@ public:
   virtual void start() {}
   virtual void stop() {}
   virtual void sendPointCloud(const LidarPointCloudMsg& msg) = 0;
+  virtual void sendTemperature(float temperature) {}
 #ifdef ENABLE_IMU_DATA_PARSE
   virtual void sendImuData(const std::shared_ptr<ImuData>& msg) = 0;
 #endif
@@ -93,6 +94,7 @@ protected:
 
   void sendPacket(const Packet& msg);
   void sendPointCloud(std::shared_ptr<LidarPointCloudMsg> msg);
+  void sendTemperature(float temperature);
 #ifdef ENABLE_IMU_DATA_PARSE
   void sendImuData(const std::shared_ptr<ImuData>& msg);
 #endif
@@ -129,6 +131,14 @@ inline void Source::sendPointCloud(std::shared_ptr<LidarPointCloudMsg> msg)
   for (auto iter : pc_cb_vec_)
   {
     iter->sendPointCloud(*msg);
+  }
+}
+
+inline void Source::sendTemperature(float temperature)
+{
+  for (auto iter : pc_cb_vec_)
+  {
+    iter->sendTemperature(temperature);
   }
 }
 

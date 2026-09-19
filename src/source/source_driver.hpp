@@ -272,6 +272,12 @@ void SourceDriver::processPointCloud()
       continue;
     }
     sendPointCloud(msg);
+
+    float temperature = 0.0f;
+    if (driver_ptr_->getTemperature(temperature))
+    {
+      sendTemperature(temperature);
+    }
     
     free_point_cloud_queue_.push(msg);
   }
