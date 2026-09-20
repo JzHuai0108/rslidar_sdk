@@ -146,6 +146,14 @@ Another version of start.py may be used, since it is different on different vers
 
 ## 5 Introduction to parameters
 
+### Airy teleoperation visualization
+
+The ROS 2 publisher can optionally expose a derived visualization cloud using
+the `ros_send_teleop_point_cloud*` settings in `config/config.yaml`. It maps an
+Airy mounted with axes right/down/forward into ROS forward/left/up coordinates
+and filters on the transformed z range. The derived cloud is generated only
+while it has a subscriber; the original point-cloud topic is unchanged.
+
 To change behaviors of rslidar_sdk, change its parameters. please read the following links for detail information.
 
 [Intro to parameters](doc/intro/02_parameter_intro.md)

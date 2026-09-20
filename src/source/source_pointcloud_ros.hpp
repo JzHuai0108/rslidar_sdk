@@ -268,7 +268,11 @@ inline void DestinationPointCloudRos::sendImuData(const std::shared_ptr<ImuData>
 #ifdef ENABLE_IMU_DATA_PARSE
   #include <sensor_msgs/msg/imu.hpp>
 #endif
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <sstream>
+#include <utility>
 
 namespace robosense
 {
@@ -409,6 +413,87 @@ inline sensor_msgs::msg::PointCloud2 toRosMsg(const LidarPointCloudMsg& rs_msg, 
 
   return ros_msg;
 }
+
+// Convert the camera-style Airy mounting axes (right, down, forward) to the
+// ROS mobile-robot convention (forward, left, up), then keep only the height
+// slice useful for teleoperation. The original cloud remains untouched.
+inline sensor_msgs::msg::PointCloud2 toTeleopRosMsg(
+    const sensor_msgs::msg::PointCloud2& source,
+    const std::string& frame_id,
+    float min_z,
+    float max_z)
+{
+  sensor_msgs::msg::PointCloud2 output = source;
+  output.header.frame_id = frame_id;
+  output.height = 1;
+  output.width = 0;
+  output.row_step = 0;
+  output.is_dense = true;
+  output.data.clear();
+  output.data.reserve(source.data.size());
+
+  uint32_t x_offset = 0;
+  uint32_t y_offset = 0;
+  uint32_t z_offset = 0;
+  bool have_x = false;
+  bool have_y = false;
+  bool have_z = false;
+  for (const auto& field : source.fields)
+  {
+    if (field.name == "x")
+    {
+      x_offset = field.offset;
+      have_x = true;
+    }
+    else if (field.name == "y")
+    {
+      y_offset = field.offset;
+      have_y = true;
+    }
+    else if (field.name == "z")
+    {
+      z_offset = field.offset;
+      have_z = true;
+    }
+  }
+  if (!have_x || !have_y || !have_z || source.point_step == 0)
+  {
+    return output;
+  }
+
+  const size_t point_count = source.data.size() / source.point_step;
+  for (size_t index = 0; index < point_count; ++index)
+  {
+    const uint8_t* input = source.data.data() + index * source.point_step;
+    float old_x;
+    float old_y;
+    float old_z;
+    std::memcpy(&old_x, input + x_offset, sizeof(float));
+    std::memcpy(&old_y, input + y_offset, sizeof(float));
+    std::memcpy(&old_z, input + z_offset, sizeof(float));
+
+    const float new_x = old_z;
+    const float new_y = -old_x;
+    const float new_z = -old_y;
+    if (!std::isfinite(new_x) || !std::isfinite(new_y) ||
+        !std::isfinite(new_z) || new_z < min_z || new_z > max_z)
+    {
+      continue;
+    }
+
+    const size_t output_offset = output.data.size();
+    output.data.resize(output_offset + source.point_step);
+    uint8_t* destination = output.data.data() + output_offset;
+    std::memcpy(destination, input, source.point_step);
+    std::memcpy(destination + x_offset, &new_x, sizeof(float));
+    std::memcpy(destination + y_offset, &new_y, sizeof(float));
+    std::memcpy(destination + z_offset, &new_z, sizeof(float));
+    ++output.width;
+  }
+
+  output.row_step = output.width * output.point_step;
+  return output;
+}
 #ifdef ENABLE_IMU_DATA_PARSE
 sensor_msgs::msg::Imu toRosMsg(const std::shared_ptr<ImuData>& data, const std::string& frame_id)
 {
@@ -442,11 +527,15 @@ public:
 private:
   std::shared_ptr<rclcpp::Node> node_ptr_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr teleop_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr temperature_pub_;
 #ifdef ENABLE_IMU_DATA_PARSE
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
 #endif
   std::string frame_id_;
+  std::string teleop_frame_id_;
+  float teleop_min_z_;
+  float teleop_max_z_;
   bool send_by_rows_;
 };
 
@@ -478,6 +567,28 @@ inline void DestinationPointCloudRos::init(const YAML::Node& config)
 
   pub_ = node_ptr_->create_publisher<sensor_msgs::msg::PointCloud2>(ros_send_topic, ros_queue_length);
 
+  bool send_teleop_point_cloud;
+  yamlRead<bool>(config["ros"],
+      "ros_send_teleop_point_cloud", send_teleop_point_cloud, false);
+  if (send_teleop_point_cloud)
+  {
+    std::string teleop_topic;
+    yamlRead<std::string>(config["ros"],
+        "ros_send_teleop_point_cloud_topic", teleop_topic, "rslidar_points_teleop");
+    yamlRead<std::string>(config["ros"],
+        "ros_teleop_frame_id", teleop_frame_id_, "rslidar_teleop");
+    yamlRead<float>(config["ros"], "ros_teleop_min_z", teleop_min_z_, -0.25f);
+    yamlRead<float>(config["ros"], "ros_teleop_max_z", teleop_max_z_, 0.50f);
+    if (teleop_min_z_ > teleop_max_z_)
+    {
+      std::swap(teleop_min_z_, teleop_max_z_);
+    }
+    auto teleop_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    teleop_qos.best_effort();
+    teleop_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::PointCloud2>(
+        teleop_topic, teleop_qos);
+  }
+
   std::string ros_send_temperature_topic;
   yamlRead<std::string>(config["ros"],
       "ros_send_temperature_topic", ros_send_temperature_topic, "rslidar_temperature");
@@ -495,7 +606,18 @@ inline void DestinationPointCloudRos::init(const YAML::Node& config)
 
 inline void DestinationPointCloudRos::sendPointCloud(const LidarPointCloudMsg& msg)
 {
-  pub_->publish(toRosMsg(msg, frame_id_, send_by_rows_));
+  auto ros_msg = toRosMsg(msg, frame_id_, send_by_rows_);
+  if (teleop_pub_ && teleop_pub_->get_subscription_count() > 0)
+  {
+    auto teleop_msg = toTeleopRosMsg(
+        ros_msg, teleop_frame_id_, teleop_min_z_, teleop_max_z_);
+    pub_->publish(std::move(ros_msg));
+    teleop_pub_->publish(std::move(teleop_msg));
+  }
+  else
+  {
+    pub_->publish(std::move(ros_msg));
+  }
 }
 
 inline void DestinationPointCloudRos::sendTemperature(float temperature)

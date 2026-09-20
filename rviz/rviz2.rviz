@@ -65,18 +65,18 @@ Visualization Manager:
       Size (m): 0.05000000074505806
       Style: Points
       Topic:
-        Depth: 5
+        Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /rslidar_points
+        Reliability Policy: Best Effort
+        Value: /rslidar_points_teleop
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: rslidar
+    Fixed Frame: rslidar_teleop
     Frame Rate: 30
   Name: root
   Tools:

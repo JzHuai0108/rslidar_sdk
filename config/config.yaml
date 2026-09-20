@@ -41,5 +41,13 @@ lidar:
       ros_send_packet_topic: /rslidar_packets          #Topic used to send lidar packets through ROS
       ros_send_imu_data_topic: /rslidar_imu_data         #Topic used to send imu data through ROS
       ros_send_point_cloud_topic: /rslidar_points      #Topic used to send point cloud through ROS
+      # Optional low-latency RViz cloud. The raw /rslidar_points topic above is
+      # preserved for recording. Airy mounting axes right/down/forward become
+      # ROS axes forward/left/up, then points outside this z slice are removed.
+      ros_send_teleop_point_cloud: true
+      ros_send_teleop_point_cloud_topic: /rslidar_points_teleop
+      ros_teleop_frame_id: rslidar_teleop
+      ros_teleop_min_z: -0.25
+      ros_teleop_max_z: 0.50
       ros_send_temperature_topic: /rslidar_temperature  #LiDAR internal temperature (sensor_msgs/Temperature)
       ros_queue_length: 100                            #Topic QoS history depth
