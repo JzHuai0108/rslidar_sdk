@@ -36,6 +36,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <rs_driver/api/lidar_driver.hpp>
 #include <rs_driver/utility/sync_queue.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <string>
 
 namespace robosense
 {
@@ -75,6 +80,9 @@ protected:
 #endif
   std::thread point_cloud_process_thread_;
   bool to_exit_process_;
+  std::string airy_calibration_file_;
+  bool airy_calibration_saved_{false};
+  void saveAiryCalibration();
 };
 
 SourceDriver::SourceDriver(SourceType src_type)
@@ -106,6 +114,13 @@ inline void SourceDriver::init(const YAML::Node& config)
   std::string lidar_type;
   yamlReadAbort<std::string>(driver_config, "lidar_type", lidar_type);
   driver_param.lidar_type = strToLidarType(lidar_type);
+  if (driver_param.lidar_type == LidarType::RSAIRY)
+  {
+    if (const char* path = std::getenv("AIRY96_CALIBRATION_FILE"))
+    {
+      airy_calibration_file_ = path;
+    }
+  }
 
   // decoder
   yamlRead<bool>(driver_config, "wait_for_difop", driver_param.decoder_param.wait_for_difop, true);
@@ -262,6 +277,53 @@ void SourceDriver::processImuData()
   }
 }
 #endif
+inline void SourceDriver::saveAiryCalibration()
+{
+  if (airy_calibration_saved_ || airy_calibration_file_.empty())
+  {
+    return;
+  }
+
+  DeviceInfo info;
+  if (!driver_ptr_->getDeviceInfo(info))
+  {
+    return; // Wait for the factory DIFOP packet.
+  }
+  const float q_norm_sq = info.qx * info.qx + info.qy * info.qy +
+                          info.qz * info.qz + info.qw * info.qw;
+  if (!std::isfinite(q_norm_sq) || q_norm_sq < 0.25f ||
+      !std::isfinite(info.x) || !std::isfinite(info.y) || !std::isfinite(info.z))
+  {
+    RS_ERROR << "Invalid Airy96 IMU extrinsics in DIFOP; waiting for a valid packet" << RS_REND;
+    return;
+  }
+
+  std::ofstream output(airy_calibration_file_);
+  if (!output)
+  {
+    RS_ERROR << "Cannot write Airy96 calibration to " << airy_calibration_file_ << RS_REND;
+    return;
+  }
+  output << std::setprecision(10)
+         << "# Factory fields from the RSAIRY DIFOP packet.\n"
+         << "# The SDK does not specify transform direction or translation units.\n"
+         << "source: RSAIRY_DIFOP\n"
+         << "factory_imu_extrinsics_raw:\n"
+         << "  quaternion_xyzw: [" << info.qx << ", " << info.qy << ", "
+         << info.qz << ", " << info.qw << "]\n"
+         << "  translation_xyz: [" << info.x << ", " << info.y << ", "
+         << info.z << "]\n"
+         << "  translation_unit: vendor_unspecified\n"
+         << "  transform_direction: vendor_unspecified\n";
+  output.close();
+  if (output.good())
+  {
+    airy_calibration_saved_ = true;
+    RS_INFO << "Airy96 factory IMU extrinsics saved to "
+            << airy_calibration_file_ << RS_REND;
+  }
+}
+
 void SourceDriver::processPointCloud()
 {
   while (!to_exit_process_)
@@ -272,6 +334,7 @@ void SourceDriver::processPointCloud()
       continue;
     }
     sendPointCloud(msg);
+    saveAiryCalibration();
 
     float temperature = 0.0f;
     if (driver_ptr_->getTemperature(temperature))
